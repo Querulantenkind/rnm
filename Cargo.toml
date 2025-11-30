@@ -1,0 +1,33 @@
+[package]
+name = "rnm"
+version = "0.1.0"
+edition = "2021"
+description = "A modern TUI tool for batch renaming files"
+authors = ["Luca"]
+license = "MIT"
+
+[[bin]]
+name = "rnm"
+path = "src/main.rs"
+
+[dependencies]
+# TUI Framework
+ratatui = "0.29"
+crossterm = "0.28"
+
+# CLI Argument Parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# File system utilities
+glob = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
