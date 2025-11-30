@@ -17,7 +17,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{App, AppResult, RenameMode};
+use app::{App, AppResult, PrefixAction, RenameMode};
 use config::{parse_mode, Config, Preset};
 use keybindings::handle_key_event;
 use operations::{execute_renames, generate_previews, print_previews};
@@ -36,17 +36,41 @@ struct Args {
     #[arg(long, short = 'n')]
     dry_run: bool,
 
-    /// Search pattern for find/replace mode
+    /// Search pattern for find/replace or regex mode
     #[arg(short, long)]
     search: Option<String>,
 
-    /// Replace pattern for find/replace mode
+    /// Replace pattern for find/replace or regex mode
     #[arg(short, long)]
     replace: Option<String>,
 
-    /// Rename mode: search, upper, lower, title
+    /// Rename mode: search, regex, numbering, prefix, suffix, upper, lower, title
     #[arg(long, short = 'm')]
     mode: Option<String>,
+
+    /// Pattern for numbering mode (e.g., "photo_###")
+    #[arg(long)]
+    pattern: Option<String>,
+
+    /// Starting number for numbering mode
+    #[arg(long, default_value = "1")]
+    start: usize,
+
+    /// Add prefix to filenames
+    #[arg(long)]
+    prefix: Option<String>,
+
+    /// Add suffix to filenames (before extension)
+    #[arg(long)]
+    suffix: Option<String>,
+
+    /// Remove prefix from filenames
+    #[arg(long)]
+    remove_prefix: Option<String>,
+
+    /// Remove suffix from filenames (before extension)
+    #[arg(long)]
+    remove_suffix: Option<String>,
 
     /// Load a saved preset by name
     #[arg(long, short = 'p')]
@@ -85,6 +109,11 @@ fn main() -> Result<()> {
     let non_interactive = args.search.is_some() 
         || args.mode.is_some() 
         || args.preset.is_some()
+        || args.pattern.is_some()
+        || args.prefix.is_some()
+        || args.suffix.is_some()
+        || args.remove_prefix.is_some()
+        || args.remove_suffix.is_some()
         || args.dry_run;
 
     if non_interactive {
@@ -148,29 +177,11 @@ fn save_preset(args: &Args, preset_name: &str) -> Result<()> {
 fn run_non_interactive(args: &Args, directory: PathBuf, pattern: Option<String>) -> Result<()> {
     let config = Config::load()?;
 
-    // Determine mode and search/replace from args or preset
-    let (mode, search, replace) = if let Some(preset_name) = &args.preset {
-        let preset = config.get_preset(preset_name)
-            .ok_or_else(|| anyhow!("Preset nicht gefunden: {}", preset_name))?;
-        (preset.mode, preset.search.clone(), preset.replace.clone())
-    } else {
-        let mode = if let Some(mode_str) = &args.mode {
-            parse_mode(mode_str).ok_or_else(|| anyhow!("Unbekannter Modus: {}", mode_str))?
-        } else {
-            RenameMode::SearchReplace
-        };
-        
-        (
-            mode,
-            args.search.clone().unwrap_or_default(),
-            args.replace.clone().unwrap_or_default(),
-        )
-    };
+    // Determine mode, search, replace, and prefix_action from args
+    let (mode, search, replace, prefix_action, number_start) = determine_mode_from_args(args, &config)?;
 
-    // Validate search is provided for SearchReplace mode
-    if mode == RenameMode::SearchReplace && search.is_empty() {
-        return Err(anyhow!("Fuer den Suchen/Ersetzen-Modus muss --search angegeben werden"));
-    }
+    // Validate inputs based on mode
+    validate_mode_inputs(mode, &search)?;
 
     // Load files
     let files = app::load_files(&directory, pattern.as_deref(), config.default_sort)?;
@@ -182,14 +193,12 @@ fn run_non_interactive(args: &Args, directory: PathBuf, pattern: Option<String>)
 
     println!("Verzeichnis: {}", directory.display());
     println!("Modus: {}", mode.display_name());
-    if mode.uses_search_replace() {
-        println!("Suche: '{}' -> Ersetze: '{}'", search, replace);
-    }
+    print_mode_details(mode, &search, &replace, prefix_action);
     println!("Dateien: {}", files.len());
 
     // Generate previews
     let selected: HashSet<usize> = HashSet::new();
-    let previews = generate_previews(&files, &selected, &search, &replace, mode);
+    let previews = generate_previews(&files, &selected, &search, &replace, mode, prefix_action, number_start, 1)?;
 
     // Print preview
     print_previews(&previews);
@@ -225,6 +234,91 @@ fn run_non_interactive(args: &Args, directory: PathBuf, pattern: Option<String>)
     println!("{} Datei(en) erfolgreich umbenannt.", count);
 
     Ok(())
+}
+
+/// Determine mode and settings from CLI arguments
+fn determine_mode_from_args(args: &Args, config: &Config) -> Result<(RenameMode, String, String, PrefixAction, usize)> {
+    // Check for preset first
+    if let Some(preset_name) = &args.preset {
+        let preset = config.get_preset(preset_name)
+            .ok_or_else(|| anyhow!("Preset nicht gefunden: {}", preset_name))?;
+        return Ok((preset.mode, preset.search.clone(), preset.replace.clone(), PrefixAction::Add, 1));
+    }
+
+    // Check for shortcut arguments
+    if let Some(prefix) = &args.prefix {
+        return Ok((RenameMode::Prefix, prefix.clone(), String::new(), PrefixAction::Add, 1));
+    }
+    if let Some(suffix) = &args.suffix {
+        return Ok((RenameMode::Suffix, suffix.clone(), String::new(), PrefixAction::Add, 1));
+    }
+    if let Some(prefix) = &args.remove_prefix {
+        return Ok((RenameMode::Prefix, prefix.clone(), String::new(), PrefixAction::Remove, 1));
+    }
+    if let Some(suffix) = &args.remove_suffix {
+        return Ok((RenameMode::Suffix, suffix.clone(), String::new(), PrefixAction::Remove, 1));
+    }
+    if let Some(pattern) = &args.pattern {
+        return Ok((RenameMode::Numbering, pattern.clone(), String::new(), PrefixAction::Add, args.start));
+    }
+
+    // Use explicit mode
+    let mode = if let Some(mode_str) = &args.mode {
+        parse_mode(mode_str).ok_or_else(|| anyhow!("Unbekannter Modus: {}", mode_str))?
+    } else {
+        RenameMode::SearchReplace
+    };
+
+    Ok((
+        mode,
+        args.search.clone().unwrap_or_default(),
+        args.replace.clone().unwrap_or_default(),
+        PrefixAction::Add,
+        args.start,
+    ))
+}
+
+/// Validate inputs based on mode
+fn validate_mode_inputs(mode: RenameMode, search: &str) -> Result<()> {
+    match mode {
+        RenameMode::SearchReplace | RenameMode::Regex => {
+            if search.is_empty() {
+                return Err(anyhow!("Fuer diesen Modus muss --search angegeben werden"));
+            }
+        }
+        RenameMode::Numbering => {
+            if search.is_empty() {
+                return Err(anyhow!("Fuer Nummerierung muss --pattern angegeben werden"));
+            }
+        }
+        RenameMode::Prefix | RenameMode::Suffix => {
+            if search.is_empty() {
+                return Err(anyhow!("Fuer Prefix/Suffix muss ein Wert angegeben werden"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Print mode-specific details
+fn print_mode_details(mode: RenameMode, search: &str, replace: &str, prefix_action: PrefixAction) {
+    match mode {
+        RenameMode::SearchReplace => {
+            println!("Suche: '{}' -> Ersetze: '{}'", search, replace);
+        }
+        RenameMode::Regex => {
+            println!("Regex: '{}' -> '{}'", search, replace);
+        }
+        RenameMode::Numbering => {
+            println!("Muster: '{}'", search);
+        }
+        RenameMode::Prefix | RenameMode::Suffix => {
+            let action = if prefix_action == PrefixAction::Add { "Hinzufuegen" } else { "Entfernen" };
+            println!("{}: '{}' ({})", mode.display_name(), search, action);
+        }
+        _ => {}
+    }
 }
 
 /// Run in interactive TUI mode

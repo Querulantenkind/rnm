@@ -33,11 +33,39 @@ pub enum DialogState {
     Error,
 }
 
+/// Action for prefix/suffix mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PrefixAction {
+    #[default]
+    Add,
+    Remove,
+}
+
+impl PrefixAction {
+    pub fn toggle(&self) -> Self {
+        match self {
+            PrefixAction::Add => PrefixAction::Remove,
+            PrefixAction::Remove => PrefixAction::Add,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            PrefixAction::Add => "Hinzufuegen",
+            PrefixAction::Remove => "Entfernen",
+        }
+    }
+}
+
 /// Rename operation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RenameMode {
     #[default]
     SearchReplace,
+    Regex,
+    Numbering,
+    Prefix,
+    Suffix,
     Uppercase,
     Lowercase,
     TitleCase,
@@ -47,7 +75,11 @@ impl RenameMode {
     /// Cycle to the next mode
     pub fn next(&self) -> Self {
         match self {
-            RenameMode::SearchReplace => RenameMode::Uppercase,
+            RenameMode::SearchReplace => RenameMode::Regex,
+            RenameMode::Regex => RenameMode::Numbering,
+            RenameMode::Numbering => RenameMode::Prefix,
+            RenameMode::Prefix => RenameMode::Suffix,
+            RenameMode::Suffix => RenameMode::Uppercase,
             RenameMode::Uppercase => RenameMode::Lowercase,
             RenameMode::Lowercase => RenameMode::TitleCase,
             RenameMode::TitleCase => RenameMode::SearchReplace,
@@ -58,6 +90,10 @@ impl RenameMode {
     pub fn display_name(&self) -> &'static str {
         match self {
             RenameMode::SearchReplace => "Suchen/Ersetzen",
+            RenameMode::Regex => "Regex",
+            RenameMode::Numbering => "Nummerierung",
+            RenameMode::Prefix => "Prefix",
+            RenameMode::Suffix => "Suffix",
             RenameMode::Uppercase => "GROSSBUCHSTABEN",
             RenameMode::Lowercase => "kleinbuchstaben",
             RenameMode::TitleCase => "Titel Schreibweise",
@@ -66,7 +102,19 @@ impl RenameMode {
 
     /// Check if this mode uses search/replace fields
     pub fn uses_search_replace(&self) -> bool {
-        matches!(self, RenameMode::SearchReplace)
+        matches!(self, RenameMode::SearchReplace | RenameMode::Regex)
+    }
+
+    /// Check if this mode uses input fields at all
+    pub fn uses_input(&self) -> bool {
+        matches!(
+            self,
+            RenameMode::SearchReplace
+                | RenameMode::Regex
+                | RenameMode::Numbering
+                | RenameMode::Prefix
+                | RenameMode::Suffix
+        )
     }
 }
 
@@ -152,7 +200,7 @@ pub struct App {
     /// Current focused panel
     pub focused_panel: FocusedPanel,
 
-    /// Search input field content
+    /// Search input field content (also used for pattern/prefix/suffix)
     pub search_input: String,
 
     /// Replace input field content
@@ -184,6 +232,18 @@ pub struct App {
 
     /// Current sort order
     pub sort_order: SortOrder,
+
+    /// Action for prefix/suffix mode
+    pub prefix_action: PrefixAction,
+
+    /// Starting number for numbering mode
+    pub number_start: usize,
+
+    /// Step for numbering mode
+    pub number_step: usize,
+
+    /// Regex error message (if pattern is invalid)
+    pub regex_error: Option<String>,
 }
 
 impl App {
@@ -207,6 +267,10 @@ impl App {
             last_rename_count: 0,
             rename_mode: RenameMode::default(),
             sort_order: SortOrder::default(),
+            prefix_action: PrefixAction::default(),
+            number_start: 1,
+            number_step: 1,
+            regex_error: None,
         })
     }
 
@@ -252,13 +316,19 @@ impl App {
     pub fn next_panel(&mut self) {
         self.focused_panel = match self.focused_panel {
             FocusedPanel::Files => {
-                if self.rename_mode.uses_search_replace() {
+                if self.rename_mode.uses_input() {
                     FocusedPanel::SearchField
                 } else {
                     FocusedPanel::Files
                 }
             }
-            FocusedPanel::SearchField => FocusedPanel::ReplaceField,
+            FocusedPanel::SearchField => {
+                if self.rename_mode.uses_search_replace() {
+                    FocusedPanel::ReplaceField
+                } else {
+                    FocusedPanel::Files
+                }
+            }
             FocusedPanel::ReplaceField => FocusedPanel::Files,
         };
     }
@@ -269,6 +339,8 @@ impl App {
             FocusedPanel::Files => {
                 if self.rename_mode.uses_search_replace() {
                     FocusedPanel::ReplaceField
+                } else if self.rename_mode.uses_input() {
+                    FocusedPanel::SearchField
                 } else {
                     FocusedPanel::Files
                 }
@@ -281,10 +353,23 @@ impl App {
     /// Cycle to next rename mode
     pub fn cycle_mode(&mut self) {
         self.rename_mode = self.rename_mode.next();
-        // If switching to a non-search mode, go back to files panel
-        if !self.rename_mode.uses_search_replace() {
+        // Reset to files panel if mode doesn't use input
+        if !self.rename_mode.uses_input() {
             self.focused_panel = FocusedPanel::Files;
         }
+        // Clear regex error when switching modes
+        self.regex_error = None;
+        // Set default pattern for numbering mode
+        if self.rename_mode == RenameMode::Numbering && self.search_input.is_empty() {
+            self.search_input = "file_###".to_string();
+            self.search_cursor = self.search_input.len();
+        }
+        self.update_preview();
+    }
+
+    /// Toggle prefix/suffix action (add/remove)
+    pub fn toggle_prefix_action(&mut self) {
+        self.prefix_action = self.prefix_action.toggle();
         self.update_preview();
     }
 
@@ -375,13 +460,27 @@ impl App {
 
     /// Update preview based on current search/replace values
     pub fn update_preview(&mut self) {
-        self.previews = crate::operations::generate_previews(
+        let result = crate::operations::generate_previews(
             &self.files,
             &self.selected_files,
             &self.search_input,
             &self.replace_input,
             self.rename_mode,
+            self.prefix_action,
+            self.number_start,
+            self.number_step,
         );
+
+        match result {
+            Ok(previews) => {
+                self.previews = previews;
+                self.regex_error = None;
+            }
+            Err(e) => {
+                self.previews = Vec::new();
+                self.regex_error = Some(e.to_string());
+            }
+        }
     }
 
     /// Execute the rename operations
@@ -453,7 +552,7 @@ impl App {
     /// Set rename mode directly
     pub fn set_mode(&mut self, mode: RenameMode) {
         self.rename_mode = mode;
-        if !mode.uses_search_replace() {
+        if !mode.uses_input() {
             self.focused_panel = FocusedPanel::Files;
         }
         self.update_preview();

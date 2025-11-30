@@ -172,8 +172,8 @@ fn draw_operation_panel(frame: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Mode label
-            Constraint::Length(1), // Search or info
-            Constraint::Length(1), // Replace or empty
+            Constraint::Length(1), // Search/Pattern or info
+            Constraint::Length(1), // Replace or action toggle or empty
         ])
         .margin(1)
         .split(inner_area);
@@ -190,60 +190,138 @@ fn draw_operation_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(mode_line), inner_chunks[0]);
 
     // Mode-specific content
-    if app.rename_mode.uses_search_replace() {
-        // Search field
-        let search_label_style = if is_search_focused {
-            Style::default().fg(INPUT_COLOR).bold()
-        } else {
-            Style::default().fg(TEXT_DIM)
-        };
-
-        let search_line = Line::from(vec![
-            Span::styled("Suche:   ", search_label_style),
-            Span::styled(&app.search_input, Style::default().fg(TEXT_COLOR)),
-            if is_search_focused {
-                Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+    match app.rename_mode {
+        RenameMode::SearchReplace => {
+            draw_search_replace_fields(frame, app, is_search_focused, is_replace_focused, &inner_chunks, "Suche:", "Ersetze:");
+        }
+        RenameMode::Regex => {
+            draw_search_replace_fields(frame, app, is_search_focused, is_replace_focused, &inner_chunks, "Regex:", "Ersetze:");
+            // Show regex error if any
+            if let Some(err) = &app.regex_error {
+                let error_line = Line::from(Span::styled(
+                    format!("Fehler: {}", err),
+                    Style::default().fg(ERROR_COLOR),
+                ));
+                // This would need additional space, but for now we'll show in preview
+                let _ = error_line;
+            }
+        }
+        RenameMode::Numbering => {
+            let label_style = if is_search_focused {
+                Style::default().fg(INPUT_COLOR).bold()
             } else {
-                Span::raw("")
-            },
-        ]);
-        frame.render_widget(Paragraph::new(search_line), inner_chunks[1]);
+                Style::default().fg(TEXT_DIM)
+            };
 
-        // Replace field
-        let replace_label_style = if is_replace_focused {
-            Style::default().fg(INPUT_COLOR).bold()
-        } else {
-            Style::default().fg(TEXT_DIM)
-        };
+            let pattern_line = Line::from(vec![
+                Span::styled("Muster:  ", label_style),
+                Span::styled(&app.search_input, Style::default().fg(TEXT_COLOR)),
+                if is_search_focused {
+                    Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+                } else {
+                    Span::raw("")
+                },
+            ]);
+            frame.render_widget(Paragraph::new(pattern_line), inner_chunks[1]);
 
-        let replace_line = Line::from(vec![
-            Span::styled("Ersetze: ", replace_label_style),
-            Span::styled(&app.replace_input, Style::default().fg(TEXT_COLOR)),
-            if is_replace_focused {
-                Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+            let hint_line = Line::from(Span::styled(
+                "Nutze # fuer Ziffern: photo_### -> photo_001",
+                Style::default().fg(TEXT_DIM).italic(),
+            ));
+            frame.render_widget(Paragraph::new(hint_line), inner_chunks[2]);
+        }
+        RenameMode::Prefix | RenameMode::Suffix => {
+            let label = if app.rename_mode == RenameMode::Prefix { "Prefix:" } else { "Suffix:" };
+            let label_style = if is_search_focused {
+                Style::default().fg(INPUT_COLOR).bold()
             } else {
-                Span::raw("")
-            },
-        ]);
-        frame.render_widget(Paragraph::new(replace_line), inner_chunks[2]);
-    } else {
-        // Show info for case transformation modes
-        let info_text = match app.rename_mode {
-            RenameMode::Uppercase => "Alle Dateinamen werden in GROSSBUCHSTABEN umgewandelt",
-            RenameMode::Lowercase => "Alle Dateinamen werden in kleinbuchstaben umgewandelt",
-            RenameMode::TitleCase => "Jedes Wort Beginnt Mit Grossbuchstaben",
-            RenameMode::SearchReplace => "", // Won't reach here
-        };
+                Style::default().fg(TEXT_DIM)
+            };
 
-        let info_line = Line::from(Span::styled(info_text, Style::default().fg(TEXT_DIM).italic()));
-        frame.render_widget(Paragraph::new(info_line), inner_chunks[1]);
+            let input_line = Line::from(vec![
+                Span::styled(format!("{:9}", label), label_style),
+                Span::styled(&app.search_input, Style::default().fg(TEXT_COLOR)),
+                if is_search_focused {
+                    Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+                } else {
+                    Span::raw("")
+                },
+            ]);
+            frame.render_widget(Paragraph::new(input_line), inner_chunks[1]);
 
-        let hint_line = Line::from(Span::styled(
-            "Druecke Enter um die Vorschau anzuwenden",
-            Style::default().fg(INPUT_COLOR),
-        ));
-        frame.render_widget(Paragraph::new(hint_line), inner_chunks[2]);
+            let action_line = Line::from(vec![
+                Span::styled("Aktion:  ", Style::default().fg(TEXT_DIM)),
+                Span::styled(
+                    format!("[{}]", app.prefix_action.display_name()),
+                    Style::default().fg(INPUT_COLOR).bold(),
+                ),
+                Span::styled("  (t: wechseln)", Style::default().fg(TEXT_DIM)),
+            ]);
+            frame.render_widget(Paragraph::new(action_line), inner_chunks[2]);
+        }
+        RenameMode::Uppercase | RenameMode::Lowercase | RenameMode::TitleCase => {
+            let info_text = match app.rename_mode {
+                RenameMode::Uppercase => "Alle Dateinamen werden in GROSSBUCHSTABEN umgewandelt",
+                RenameMode::Lowercase => "Alle Dateinamen werden in kleinbuchstaben umgewandelt",
+                RenameMode::TitleCase => "Jedes Wort Beginnt Mit Grossbuchstaben",
+                _ => "",
+            };
+
+            let info_line = Line::from(Span::styled(info_text, Style::default().fg(TEXT_DIM).italic()));
+            frame.render_widget(Paragraph::new(info_line), inner_chunks[1]);
+
+            let hint_line = Line::from(Span::styled(
+                "Druecke Enter um die Vorschau anzuwenden",
+                Style::default().fg(INPUT_COLOR),
+            ));
+            frame.render_widget(Paragraph::new(hint_line), inner_chunks[2]);
+        }
     }
+}
+
+/// Helper to draw search/replace input fields
+fn draw_search_replace_fields(
+    frame: &mut Frame,
+    app: &App,
+    is_search_focused: bool,
+    is_replace_focused: bool,
+    chunks: &[Rect],
+    search_label: &str,
+    replace_label: &str,
+) {
+    let search_label_style = if is_search_focused {
+        Style::default().fg(INPUT_COLOR).bold()
+    } else {
+        Style::default().fg(TEXT_DIM)
+    };
+
+    let search_line = Line::from(vec![
+        Span::styled(format!("{:9}", search_label), search_label_style),
+        Span::styled(&app.search_input, Style::default().fg(TEXT_COLOR)),
+        if is_search_focused {
+            Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+        } else {
+            Span::raw("")
+        },
+    ]);
+    frame.render_widget(Paragraph::new(search_line), chunks[1]);
+
+    let replace_label_style = if is_replace_focused {
+        Style::default().fg(INPUT_COLOR).bold()
+    } else {
+        Style::default().fg(TEXT_DIM)
+    };
+
+    let replace_line = Line::from(vec![
+        Span::styled(format!("{:9}", replace_label), replace_label_style),
+        Span::styled(&app.replace_input, Style::default().fg(TEXT_COLOR)),
+        if is_replace_focused {
+            Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+        } else {
+            Span::raw("")
+        },
+    ]);
+    frame.render_widget(Paragraph::new(replace_line), chunks[2]);
 }
 
 /// Draw the preview panel
@@ -257,11 +335,37 @@ fn draw_preview_panel(frame: &mut Frame, app: &App, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // For search/replace mode, check if search is empty
+    // Show regex error if present
+    if let Some(err) = &app.regex_error {
+        let error_line = Paragraph::new(format!("Regex-Fehler: {}", err))
+            .style(Style::default().fg(ERROR_COLOR));
+        frame.render_widget(error_line, inner_area);
+        return;
+    }
+
+    // For search/replace and regex mode, check if search is empty
     if app.rename_mode.uses_search_replace() && app.search_input.is_empty() {
-        let hint = Paragraph::new("Gib einen Suchbegriff ein, um die Vorschau zu sehen")
-            .style(Style::default().fg(TEXT_DIM));
-        frame.render_widget(hint, inner_area);
+        let hint = match app.rename_mode {
+            RenameMode::Regex => "Gib ein Regex-Muster ein (z.B. IMG_(\\d+) -> photo_$1)",
+            _ => "Gib einen Suchbegriff ein, um die Vorschau zu sehen",
+        };
+        let hint_para = Paragraph::new(hint).style(Style::default().fg(TEXT_DIM));
+        frame.render_widget(hint_para, inner_area);
+        return;
+    }
+
+    // For numbering/prefix/suffix, check if pattern is empty
+    if matches!(app.rename_mode, RenameMode::Numbering | RenameMode::Prefix | RenameMode::Suffix) 
+        && app.search_input.is_empty() 
+    {
+        let hint = match app.rename_mode {
+            RenameMode::Numbering => "Gib ein Muster ein (z.B. photo_###)",
+            RenameMode::Prefix => "Gib einen Prefix ein",
+            RenameMode::Suffix => "Gib einen Suffix ein",
+            _ => "",
+        };
+        let hint_para = Paragraph::new(hint).style(Style::default().fg(TEXT_DIM));
+        frame.render_widget(hint_para, inner_area);
         return;
     }
 
@@ -302,23 +406,38 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let help_text = match app.focused_panel {
-        FocusedPanel::Files => vec![
-            ("j/k", "Nav"),
-            ("Space", "Ausw"),
-            ("a", "Alle"),
-            ("m", "Modus"),
-            ("s", "Sort"),
-            ("Tab", "Feld"),
-            ("Enter", "Run"),
-            ("?", "Hilfe"),
-            ("q", "Ende"),
-        ],
-        FocusedPanel::SearchField | FocusedPanel::ReplaceField => vec![
-            ("Tab", "Naechstes Feld"),
-            ("Enter", "Ausfuehren"),
-            ("Esc", "Zurueck"),
-            ("F1", "Hilfe"),
-        ],
+        FocusedPanel::Files => {
+            let mut base = vec![
+                ("j/k", "Nav"),
+                ("Space", "Ausw"),
+                ("a", "Alle"),
+                ("m", "Modus"),
+                ("s", "Sort"),
+            ];
+            // Add 't' hint for prefix/suffix modes
+            if matches!(app.rename_mode, RenameMode::Prefix | RenameMode::Suffix) {
+                base.push(("t", "Toggle"));
+            }
+            base.extend([
+                ("Tab", "Feld"),
+                ("Enter", "Run"),
+                ("?", "Hilfe"),
+                ("q", "Ende"),
+            ]);
+            base
+        }
+        FocusedPanel::SearchField | FocusedPanel::ReplaceField => {
+            let mut base = vec![
+                ("Tab", "Naechstes"),
+                ("Enter", "Ausfuehren"),
+                ("Esc", "Zurueck"),
+            ];
+            if matches!(app.rename_mode, RenameMode::Prefix | RenameMode::Suffix) {
+                base.insert(1, ("t", "Toggle"));
+            }
+            base.push(("F1", "Hilfe"));
+            base
+        }
     };
 
     let spans: Vec<Span> = help_text
@@ -394,7 +513,7 @@ fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
 
 /// Draw the help dialog
 fn draw_help_dialog(frame: &mut Frame) {
-    let area = centered_rect(70, 85, frame.area());
+    let area = centered_rect(70, 90, frame.area());
 
     frame.render_widget(Clear, area);
 
@@ -416,8 +535,13 @@ fn draw_help_dialog(frame: &mut Frame) {
         ("a", "Alle Dateien auswaehlen/abwaehlen"),
         ("", ""),
         ("", "--- Modi & Sortierung ---"),
-        ("m", "Modus wechseln (Suchen/Gross/Klein/Titel)"),
+        ("m", "Modus wechseln"),
         ("s", "Sortierung wechseln"),
+        ("t", "Aktion wechseln (Prefix/Suffix)"),
+        ("", ""),
+        ("", "--- Modi ---"),
+        ("", "Suchen/Ersetzen, Regex, Nummerierung"),
+        ("", "Prefix, Suffix, GROSS, klein, Titel"),
         ("", ""),
         ("", "--- Navigation ---"),
         ("Tab", "Naechstes Panel"),
@@ -428,7 +552,6 @@ fn draw_help_dialog(frame: &mut Frame) {
         ("Enter", "Umbenennung ausfuehren"),
         ("?", "Hilfe anzeigen"),
         ("q", "Programm beenden"),
-        ("Ctrl+C", "Sofort beenden"),
     ];
 
     let lines: Vec<Line> = help_sections

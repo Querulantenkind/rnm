@@ -132,6 +132,10 @@ impl Config {
 pub fn parse_mode(mode_str: &str) -> Option<RenameMode> {
     match mode_str.to_lowercase().as_str() {
         "search" | "searchreplace" | "search-replace" | "s" => Some(RenameMode::SearchReplace),
+        "regex" | "r" => Some(RenameMode::Regex),
+        "numbering" | "number" | "num" | "n" => Some(RenameMode::Numbering),
+        "prefix" | "pre" => Some(RenameMode::Prefix),
+        "suffix" | "suf" => Some(RenameMode::Suffix),
         "upper" | "uppercase" | "u" => Some(RenameMode::Uppercase),
         "lower" | "lowercase" | "l" => Some(RenameMode::Lowercase),
         "title" | "titlecase" | "t" => Some(RenameMode::TitleCase),

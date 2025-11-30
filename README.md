@@ -6,8 +6,12 @@ A modern TUI tool for batch renaming files, written in Rust.
 
 - Modern, btop-inspired terminal interface
 - Vim-style keybindings for efficient navigation
-- Multiple rename modes:
+- **8 rename modes:**
   - Search/Replace
+  - Regex with capture groups ($1, $2, ...)
+  - Sequential numbering with padding
+  - Prefix add/remove
+  - Suffix add/remove
   - UPPERCASE
   - lowercase
   - Title Case
@@ -44,37 +48,64 @@ rnm "/path/to/*.png"
 
 ### Non-Interactive CLI Mode
 
+#### Search/Replace
 ```bash
-# Dry-run: Preview changes without renaming
 rnm --dry-run --search "old" --replace "new"
+rnm --search "IMG_" --replace "photo_" --yes
+```
 
-# Execute rename with confirmation
-rnm --search "IMG_" --replace "photo_"
+#### Regex with Capture Groups
+```bash
+# Rename IMG_001.jpg to photo_001.jpg
+rnm --mode regex --search "IMG_(\d+)" --replace 'photo_$1' --dry-run
 
-# Skip confirmation (use with caution!)
-rnm --search "old" --replace "new" --yes
+# Swap parts: vacation_2024.jpg to 2024_vacation.jpg
+rnm --mode regex --search "(.+)_(\d+)" --replace '$2_$1' --dry-run
+```
 
-# Case transformation modes
-rnm --mode upper --dry-run          # UPPERCASE
-rnm --mode lower --dry-run          # lowercase
-rnm --mode title --dry-run          # Title Case
+#### Numbering
+```bash
+# file_### uses 3-digit padding: file_001, file_002, ...
+rnm --pattern "photo_###" --dry-run
 
-# Use on specific files
-rnm "*.jpg" --mode lower --dry-run
+# Start at 10 with 4-digit padding
+rnm --pattern "image_####" --start 10 --dry-run
+```
+
+#### Prefix/Suffix
+```bash
+# Add prefix
+rnm --prefix "backup_" --dry-run
+
+# Remove prefix
+rnm --remove-prefix "backup_" --dry-run
+
+# Add suffix (before extension)
+rnm --suffix "_v2" --dry-run
+
+# Remove suffix
+rnm --remove-suffix "_old" --dry-run
+```
+
+#### Case Transformation
+```bash
+rnm --mode upper --dry-run    # UPPERCASE
+rnm --mode lower --dry-run    # lowercase
+rnm --mode title --dry-run    # Title Case
 ```
 
 ### Presets
 
 ```bash
 # Save a preset
-rnm --search "IMG_" --replace "photo_" --save-preset my-preset
+rnm --search "IMG_" --replace "photo_" --save-preset photo-rename
 
 # List available presets
 rnm --list-presets
 
 # Use a preset
-rnm --preset my-preset --dry-run
-rnm --preset my-preset --yes
+rnm --preset photo-rename --dry-run
+rnm --preset photo-rename --yes
 ```
 
 ## Keybindings
@@ -92,6 +123,7 @@ rnm --preset my-preset --yes
 |-----|--------|
 | `m` | Cycle rename mode |
 | `s` | Cycle sort order |
+| `t` | Toggle add/remove (prefix/suffix modes) |
 
 ### Panel Navigation
 | Key | Action |
@@ -112,16 +144,23 @@ rnm --preset my-preset --yes
 
 ```
 Options:
-  -n, --dry-run                    Preview changes without actually renaming
-  -s, --search <SEARCH>            Search pattern for find/replace mode
-  -r, --replace <REPLACE>          Replace pattern for find/replace mode
-  -m, --mode <MODE>                Rename mode: search, upper, lower, title
-  -p, --preset <PRESET>            Load a saved preset by name
-  -y, --yes                        Skip confirmation prompt
-      --save-preset <SAVE_PRESET>  Save current settings as a preset
-      --list-presets               List available presets
-  -h, --help                       Print help
-  -V, --version                    Print version
+  -n, --dry-run                        Preview changes without renaming
+  -s, --search <SEARCH>                Search pattern (search/replace or regex)
+  -r, --replace <REPLACE>              Replace pattern
+  -m, --mode <MODE>                    Mode: search, regex, numbering, prefix,
+                                       suffix, upper, lower, title
+      --pattern <PATTERN>              Numbering pattern (e.g., "photo_###")
+      --start <START>                  Starting number [default: 1]
+      --prefix <PREFIX>                Add prefix to filenames
+      --suffix <SUFFIX>                Add suffix (before extension)
+      --remove-prefix <REMOVE_PREFIX>  Remove prefix from filenames
+      --remove-suffix <REMOVE_SUFFIX>  Remove suffix (before extension)
+  -p, --preset <PRESET>                Load a saved preset
+  -y, --yes                            Skip confirmation prompt
+      --save-preset <SAVE_PRESET>      Save settings as preset
+      --list-presets                   List available presets
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## Interface Layout
@@ -133,18 +172,31 @@ Options:
 |   document.pdf                                    |
 +---------------------------------------------------+
 +-- Operation --------------------------------------+
-| Mode: [Search/Replace]  (m: switch)               |
-| Search:   ______                                  |
-| Replace:  ______                                  |
+| Mode: [Regex]  (m: switch)                        |
+| Regex:   IMG_(\d+)                                |
+| Replace: photo_$1                                 |
 +---------------------------------------------------+
 +-- Preview ----------------------------------------+
-| image001.jpg  ->  photo001.jpg                    |
-| image002.jpg  ->  photo002.jpg                    |
+| IMG_001.jpg  ->  photo_001.jpg                    |
+| IMG_002.jpg  ->  photo_002.jpg                    |
 +---------------------------------------------------+
 +-- Help -------------------------------------------+
-| j/k Nav  Space Select  m Mode  s Sort  Enter Run  |
+| j/k Nav  Space Sel  m Mode  s Sort  t Toggle  ... |
 +---------------------------------------------------+
 ```
+
+## Rename Modes
+
+| Mode | Description | Example |
+|------|-------------|---------|
+| **Search/Replace** | Simple text replacement | `old` -> `new` |
+| **Regex** | Full regex with capture groups | `IMG_(\d+)` -> `photo_$1` |
+| **Numbering** | Sequential numbers with padding | `photo_###` -> `photo_001` |
+| **Prefix** | Add/remove text at start | `backup_` + `file.txt` |
+| **Suffix** | Add/remove text before extension | `file` + `_v2` + `.txt` |
+| **Uppercase** | Convert to UPPERCASE | `file.txt` -> `FILE.txt` |
+| **Lowercase** | Convert to lowercase | `FILE.TXT` -> `file.txt` |
+| **Title Case** | Capitalize each word | `hello_world` -> `Hello_World` |
 
 ## Configuration
 
@@ -152,17 +204,17 @@ Configuration is stored at `~/.config/rnm/config.toml`:
 
 ```toml
 # Default rename mode
-default_mode = "SearchReplace"  # or "Uppercase", "Lowercase", "TitleCase"
+default_mode = "SearchReplace"
 
 # Default sort order
-default_sort = "Name"  # or "NameDesc", "Size", "SizeDesc", "Extension", "Date", "DateDesc"
+default_sort = "Name"
 
 # Saved presets
-[presets.my-preset]
-name = "my-preset"
+[presets.photo-rename]
+name = "photo-rename"
 mode = "SearchReplace"
-search = "old"
-replace = "new"
+search = "IMG_"
+replace = "photo_"
 ```
 
 ## Tech Stack
@@ -170,6 +222,7 @@ replace = "new"
 - [ratatui](https://ratatui.rs/) - TUI Framework
 - [crossterm](https://github.com/crossterm-rs/crossterm) - Terminal Backend
 - [clap](https://clap.rs/) - CLI Argument Parsing
+- [regex](https://docs.rs/regex) - Regular Expressions
 - [serde](https://serde.rs/) + [toml](https://github.com/toml-rs/toml) - Configuration
 
 ## License

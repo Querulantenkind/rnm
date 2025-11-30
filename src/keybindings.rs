@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppResult, DialogState, FocusedPanel};
+use crate::app::{App, AppResult, DialogState, FocusedPanel, RenameMode};
 
 /// Handle a key event and update app state accordingly
 pub fn handle_key_event(app: &mut App, key: KeyEvent) -> AppResult {
@@ -58,6 +58,14 @@ fn handle_files_panel(app: &mut App, key: KeyEvent) -> AppResult {
         // Sort cycling
         KeyCode::Char('s') => {
             app.cycle_sort();
+            AppResult::Continue
+        }
+
+        // Toggle prefix/suffix action
+        KeyCode::Char('t') => {
+            if matches!(app.rename_mode, RenameMode::Prefix | RenameMode::Suffix) {
+                app.toggle_prefix_action();
+            }
             AppResult::Continue
         }
 

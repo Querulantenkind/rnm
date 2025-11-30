@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
+use regex::Regex;
 
-use crate::app::{FileEntry, RenameMode};
+use crate::app::{FileEntry, PrefixAction, RenameMode};
 
 /// Preview of a rename operation
 #[derive(Debug, Clone)]
@@ -25,15 +26,30 @@ pub fn generate_previews(
     search: &str,
     replace: &str,
     mode: RenameMode,
-) -> Vec<RenamePreview> {
+    prefix_action: PrefixAction,
+    number_start: usize,
+    number_step: usize,
+) -> Result<Vec<RenamePreview>> {
     let mut previews = Vec::new();
 
     // If nothing is selected, preview all files
     let indices: Vec<usize> = if selected.is_empty() {
         (0..files.len()).collect()
     } else {
-        selected.iter().copied().collect()
+        let mut v: Vec<usize> = selected.iter().copied().collect();
+        v.sort(); // Sort for consistent numbering
+        v
     };
+
+    // Pre-compile regex if in regex mode
+    let regex = if mode == RenameMode::Regex && !search.is_empty() {
+        Some(Regex::new(search).map_err(|e| anyhow!("Ungueltiger Regex: {}", e))?)
+    } else {
+        None
+    };
+
+    // Counter for numbering mode
+    let mut counter = number_start;
 
     for index in indices {
         if let Some(file) = files.get(index) {
@@ -42,7 +58,16 @@ pub fn generate_previews(
                 continue;
             }
 
-            let new_name = apply_rename_mode(&file.name, search, replace, mode);
+            let new_name = apply_rename_mode(
+                &file.name,
+                search,
+                replace,
+                mode,
+                prefix_action,
+                regex.as_ref(),
+                counter,
+            );
+
             let will_change = new_name != file.name;
 
             previews.push(RenamePreview {
@@ -51,17 +76,30 @@ pub fn generate_previews(
                 will_change,
                 file_index: index,
             });
+
+            // Increment counter for numbering mode
+            if mode == RenameMode::Numbering {
+                counter += number_step;
+            }
         }
     }
 
-    // Sort by original name
+    // Sort by original name for display
     previews.sort_by(|a, b| a.original_name.cmp(&b.original_name));
 
-    previews
+    Ok(previews)
 }
 
 /// Apply the rename mode to a filename
-fn apply_rename_mode(filename: &str, search: &str, replace: &str, mode: RenameMode) -> String {
+fn apply_rename_mode(
+    filename: &str,
+    search: &str,
+    replace: &str,
+    mode: RenameMode,
+    prefix_action: PrefixAction,
+    regex: Option<&Regex>,
+    counter: usize,
+) -> String {
     match mode {
         RenameMode::SearchReplace => {
             if search.is_empty() {
@@ -70,9 +108,116 @@ fn apply_rename_mode(filename: &str, search: &str, replace: &str, mode: RenameMo
                 filename.replace(search, replace)
             }
         }
+        RenameMode::Regex => {
+            if let Some(re) = regex {
+                re.replace_all(filename, replace).to_string()
+            } else {
+                filename.to_string()
+            }
+        }
+        RenameMode::Numbering => apply_numbering(filename, search, counter),
+        RenameMode::Prefix => apply_prefix(filename, search, prefix_action),
+        RenameMode::Suffix => apply_suffix(filename, search, prefix_action),
         RenameMode::Uppercase => to_uppercase_preserve_extension(filename),
         RenameMode::Lowercase => to_lowercase_preserve_extension(filename),
         RenameMode::TitleCase => to_titlecase_preserve_extension(filename),
+    }
+}
+
+/// Apply numbering pattern to filename
+/// Pattern uses # for digits: file_### -> file_001, file_002, etc.
+fn apply_numbering(filename: &str, pattern: &str, counter: usize) -> String {
+    if pattern.is_empty() {
+        return filename.to_string();
+    }
+
+    // Find the extension of the original file
+    let extension = if let Some(dot_pos) = filename.rfind('.') {
+        &filename[dot_pos..]
+    } else {
+        ""
+    };
+
+    // Count consecutive # characters to determine padding
+    let hash_count = pattern.chars().filter(|&c| c == '#').count();
+    
+    if hash_count == 0 {
+        // No # in pattern, just use pattern as-is with extension
+        return format!("{}{}", pattern, extension);
+    }
+
+    // Replace # sequence with padded number
+    let mut result = String::new();
+    let mut in_hash_sequence = false;
+    let mut hash_start = 0;
+
+    for (i, c) in pattern.chars().enumerate() {
+        if c == '#' {
+            if !in_hash_sequence {
+                in_hash_sequence = true;
+                hash_start = i;
+            }
+        } else {
+            if in_hash_sequence {
+                // End of hash sequence, insert padded number
+                let padding = i - hash_start;
+                result.push_str(&format!("{:0>width$}", counter, width = padding));
+                in_hash_sequence = false;
+            }
+            result.push(c);
+        }
+    }
+
+    // Handle trailing hash sequence
+    if in_hash_sequence {
+        let padding = pattern.len() - hash_start;
+        result.push_str(&format!("{:0>width$}", counter, width = padding));
+    }
+
+    // Add extension
+    format!("{}{}", result, extension)
+}
+
+/// Apply prefix to filename
+fn apply_prefix(filename: &str, prefix: &str, action: PrefixAction) -> String {
+    if prefix.is_empty() {
+        return filename.to_string();
+    }
+
+    match action {
+        PrefixAction::Add => format!("{}{}", prefix, filename),
+        PrefixAction::Remove => {
+            if filename.starts_with(prefix) {
+                filename[prefix.len()..].to_string()
+            } else {
+                filename.to_string()
+            }
+        }
+    }
+}
+
+/// Apply suffix to filename (before extension)
+fn apply_suffix(filename: &str, suffix: &str, action: PrefixAction) -> String {
+    if suffix.is_empty() {
+        return filename.to_string();
+    }
+
+    // Split filename and extension
+    let (name, ext) = if let Some(dot_pos) = filename.rfind('.') {
+        (&filename[..dot_pos], &filename[dot_pos..])
+    } else {
+        (filename, "")
+    };
+
+    match action {
+        PrefixAction::Add => format!("{}{}{}", name, suffix, ext),
+        PrefixAction::Remove => {
+            if name.ends_with(suffix) {
+                format!("{}{}", &name[..name.len() - suffix.len()], ext)
+            } else {
+                filename.to_string()
+            }
+        }
     }
 }
 
@@ -217,21 +362,26 @@ pub fn print_previews(previews: &[RenamePreview]) {
 mod tests {
     use super::*;
 
+    fn make_file(name: &str) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(name),
+            name: name.to_string(),
+            is_dir: false,
+            size: 0,
+            modified: None,
+            extension: name.rsplit('.').next().unwrap_or("").to_string(),
+        }
+    }
+
     #[test]
     fn test_generate_previews_empty_search() {
-        let files = vec![
-            FileEntry {
-                path: PathBuf::from("test.txt"),
-                name: "test.txt".to_string(),
-                is_dir: false,
-                size: 0,
-                modified: None,
-                extension: "txt".to_string(),
-            },
-        ];
+        let files = vec![make_file("test.txt")];
         let selected = HashSet::new();
 
-        let previews = generate_previews(&files, &selected, "", "replacement", RenameMode::SearchReplace);
+        let previews = generate_previews(
+            &files, &selected, "", "replacement",
+            RenameMode::SearchReplace, PrefixAction::Add, 1, 1
+        ).unwrap();
 
         assert_eq!(previews.len(), 1);
         assert!(!previews[0].will_change);
@@ -242,26 +392,15 @@ mod tests {
     #[test]
     fn test_generate_previews_with_replacement() {
         let files = vec![
-            FileEntry {
-                path: PathBuf::from("image001.jpg"),
-                name: "image001.jpg".to_string(),
-                is_dir: false,
-                size: 0,
-                modified: None,
-                extension: "jpg".to_string(),
-            },
-            FileEntry {
-                path: PathBuf::from("image002.jpg"),
-                name: "image002.jpg".to_string(),
-                is_dir: false,
-                size: 0,
-                modified: None,
-                extension: "jpg".to_string(),
-            },
+            make_file("image001.jpg"),
+            make_file("image002.jpg"),
         ];
         let selected = HashSet::new();
 
-        let previews = generate_previews(&files, &selected, "image", "photo", RenameMode::SearchReplace);
+        let previews = generate_previews(
+            &files, &selected, "image", "photo",
+            RenameMode::SearchReplace, PrefixAction::Add, 1, 1
+        ).unwrap();
 
         assert_eq!(previews.len(), 2);
         assert!(previews[0].will_change);
@@ -272,19 +411,13 @@ mod tests {
 
     #[test]
     fn test_uppercase_mode() {
-        let files = vec![
-            FileEntry {
-                path: PathBuf::from("test.txt"),
-                name: "test.txt".to_string(),
-                is_dir: false,
-                size: 0,
-                modified: None,
-                extension: "txt".to_string(),
-            },
-        ];
+        let files = vec![make_file("test.txt")];
         let selected = HashSet::new();
 
-        let previews = generate_previews(&files, &selected, "", "", RenameMode::Uppercase);
+        let previews = generate_previews(
+            &files, &selected, "", "",
+            RenameMode::Uppercase, PrefixAction::Add, 1, 1
+        ).unwrap();
 
         assert_eq!(previews.len(), 1);
         assert!(previews[0].will_change);
@@ -293,22 +426,134 @@ mod tests {
 
     #[test]
     fn test_titlecase_mode() {
-        let files = vec![
-            FileEntry {
-                path: PathBuf::from("hello_world.txt"),
-                name: "hello_world.txt".to_string(),
-                is_dir: false,
-                size: 0,
-                modified: None,
-                extension: "txt".to_string(),
-            },
-        ];
+        let files = vec![make_file("hello_world.txt")];
         let selected = HashSet::new();
 
-        let previews = generate_previews(&files, &selected, "", "", RenameMode::TitleCase);
+        let previews = generate_previews(
+            &files, &selected, "", "",
+            RenameMode::TitleCase, PrefixAction::Add, 1, 1
+        ).unwrap();
 
         assert_eq!(previews.len(), 1);
         assert!(previews[0].will_change);
         assert_eq!(previews[0].new_name, "Hello_World.txt");
+    }
+
+    #[test]
+    fn test_regex_mode() {
+        let files = vec![
+            make_file("IMG_001.jpg"),
+            make_file("IMG_002.jpg"),
+        ];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(
+            &files, &selected, r"IMG_(\d+)", "photo_$1",
+            RenameMode::Regex, PrefixAction::Add, 1, 1
+        ).unwrap();
+
+        assert_eq!(previews.len(), 2);
+        assert!(previews[0].will_change);
+        assert_eq!(previews[0].new_name, "photo_001.jpg");
+        assert!(previews[1].will_change);
+        assert_eq!(previews[1].new_name, "photo_002.jpg");
+    }
+
+    #[test]
+    fn test_regex_invalid() {
+        let files = vec![make_file("test.txt")];
+        let selected = HashSet::new();
+
+        let result = generate_previews(
+            &files, &selected, r"[invalid", "replace",
+            RenameMode::Regex, PrefixAction::Add, 1, 1
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_numbering_mode() {
+        let files = vec![
+            make_file("a.jpg"),
+            make_file("b.jpg"),
+            make_file("c.jpg"),
+        ];
+        let mut selected = HashSet::new();
+        selected.insert(0);
+        selected.insert(1);
+        selected.insert(2);
+
+        let previews = generate_previews(
+            &files, &selected, "photo_###", "",
+            RenameMode::Numbering, PrefixAction::Add, 1, 1
+        ).unwrap();
+
+        assert_eq!(previews.len(), 3);
+        // Note: sorted by original name for display
+        assert_eq!(previews[0].new_name, "photo_001.jpg");
+        assert_eq!(previews[1].new_name, "photo_002.jpg");
+        assert_eq!(previews[2].new_name, "photo_003.jpg");
+    }
+
+    #[test]
+    fn test_numbering_with_padding() {
+        let result = apply_numbering("test.jpg", "file_####", 42);
+        assert_eq!(result, "file_0042.jpg");
+
+        let result = apply_numbering("test.jpg", "img#", 5);
+        assert_eq!(result, "img5.jpg");
+    }
+
+    #[test]
+    fn test_prefix_add() {
+        let files = vec![make_file("photo.jpg")];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(
+            &files, &selected, "backup_", "",
+            RenameMode::Prefix, PrefixAction::Add, 1, 1
+        ).unwrap();
+
+        assert_eq!(previews[0].new_name, "backup_photo.jpg");
+    }
+
+    #[test]
+    fn test_prefix_remove() {
+        let files = vec![make_file("backup_photo.jpg")];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(
+            &files, &selected, "backup_", "",
+            RenameMode::Prefix, PrefixAction::Remove, 1, 1
+        ).unwrap();
+
+        assert_eq!(previews[0].new_name, "photo.jpg");
+    }
+
+    #[test]
+    fn test_suffix_add() {
+        let files = vec![make_file("photo.jpg")];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(
+            &files, &selected, "_backup", "",
+            RenameMode::Suffix, PrefixAction::Add, 1, 1
+        ).unwrap();
+
+        assert_eq!(previews[0].new_name, "photo_backup.jpg");
+    }
+
+    #[test]
+    fn test_suffix_remove() {
+        let files = vec![make_file("photo_old.jpg")];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(
+            &files, &selected, "_old", "",
+            RenameMode::Suffix, PrefixAction::Remove, 1, 1
+        ).unwrap();
+
+        assert_eq!(previews[0].new_name, "photo.jpg");
     }
 }
