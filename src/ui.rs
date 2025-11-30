@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DialogState, FocusedPanel};
+use crate::app::{App, DialogState, FocusedPanel, RenameMode};
 
 // btop-inspired color scheme
 const BORDER_COLOR: Color = Color::Cyan;
@@ -27,6 +27,7 @@ const DIALOG_BG: Color = Color::Rgb(30, 34, 42);
 const SUCCESS_COLOR: Color = Color::LightGreen;
 const ERROR_COLOR: Color = Color::LightRed;
 const WARNING_COLOR: Color = Color::Yellow;
+const MODE_COLOR: Color = Color::Magenta;
 
 /// Main draw function
 pub fn draw_ui(frame: &mut Frame, app: &App) {
@@ -65,7 +66,8 @@ fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect) {
         BORDER_COLOR
     };
 
-    let title = format!(" Dateien ({}) ", app.directory.display());
+    let sort_indicator = app.sort_order.short_indicator();
+    let title = format!(" Dateien ({}) {} ", app.directory.display(), sort_indicator);
     let block = Block::default()
         .title(title)
         .title_style(Style::default().fg(TITLE_COLOR).bold())
@@ -170,54 +172,78 @@ fn draw_operation_panel(frame: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Mode label
-            Constraint::Length(1), // Search
-            Constraint::Length(1), // Replace
+            Constraint::Length(1), // Search or info
+            Constraint::Length(1), // Replace or empty
         ])
         .margin(1)
         .split(inner_area);
 
-    // Mode label
+    // Mode label with current mode highlighted
     let mode_line = Line::from(vec![
         Span::styled("Modus: ", Style::default().fg(TEXT_DIM)),
-        Span::styled("[Suchen/Ersetzen]", Style::default().fg(INPUT_COLOR).bold()),
+        Span::styled(
+            format!("[{}]", app.rename_mode.display_name()),
+            Style::default().fg(MODE_COLOR).bold(),
+        ),
+        Span::styled("  (m: wechseln)", Style::default().fg(TEXT_DIM)),
     ]);
     frame.render_widget(Paragraph::new(mode_line), inner_chunks[0]);
 
-    // Search field
-    let search_label_style = if is_search_focused {
-        Style::default().fg(INPUT_COLOR).bold()
-    } else {
-        Style::default().fg(TEXT_DIM)
-    };
-
-    let search_line = Line::from(vec![
-        Span::styled("Suche:   ", search_label_style),
-        Span::styled(&app.search_input, Style::default().fg(TEXT_COLOR)),
-        if is_search_focused {
-            Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+    // Mode-specific content
+    if app.rename_mode.uses_search_replace() {
+        // Search field
+        let search_label_style = if is_search_focused {
+            Style::default().fg(INPUT_COLOR).bold()
         } else {
-            Span::raw("")
-        },
-    ]);
-    frame.render_widget(Paragraph::new(search_line), inner_chunks[1]);
+            Style::default().fg(TEXT_DIM)
+        };
 
-    // Replace field
-    let replace_label_style = if is_replace_focused {
-        Style::default().fg(INPUT_COLOR).bold()
-    } else {
-        Style::default().fg(TEXT_DIM)
-    };
+        let search_line = Line::from(vec![
+            Span::styled("Suche:   ", search_label_style),
+            Span::styled(&app.search_input, Style::default().fg(TEXT_COLOR)),
+            if is_search_focused {
+                Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+            } else {
+                Span::raw("")
+            },
+        ]);
+        frame.render_widget(Paragraph::new(search_line), inner_chunks[1]);
 
-    let replace_line = Line::from(vec![
-        Span::styled("Ersetze: ", replace_label_style),
-        Span::styled(&app.replace_input, Style::default().fg(TEXT_COLOR)),
-        if is_replace_focused {
-            Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+        // Replace field
+        let replace_label_style = if is_replace_focused {
+            Style::default().fg(INPUT_COLOR).bold()
         } else {
-            Span::raw("")
-        },
-    ]);
-    frame.render_widget(Paragraph::new(replace_line), inner_chunks[2]);
+            Style::default().fg(TEXT_DIM)
+        };
+
+        let replace_line = Line::from(vec![
+            Span::styled("Ersetze: ", replace_label_style),
+            Span::styled(&app.replace_input, Style::default().fg(TEXT_COLOR)),
+            if is_replace_focused {
+                Span::styled("_", Style::default().fg(INPUT_COLOR).add_modifier(Modifier::SLOW_BLINK))
+            } else {
+                Span::raw("")
+            },
+        ]);
+        frame.render_widget(Paragraph::new(replace_line), inner_chunks[2]);
+    } else {
+        // Show info for case transformation modes
+        let info_text = match app.rename_mode {
+            RenameMode::Uppercase => "Alle Dateinamen werden in GROSSBUCHSTABEN umgewandelt",
+            RenameMode::Lowercase => "Alle Dateinamen werden in kleinbuchstaben umgewandelt",
+            RenameMode::TitleCase => "Jedes Wort Beginnt Mit Grossbuchstaben",
+            RenameMode::SearchReplace => "", // Won't reach here
+        };
+
+        let info_line = Line::from(Span::styled(info_text, Style::default().fg(TEXT_DIM).italic()));
+        frame.render_widget(Paragraph::new(info_line), inner_chunks[1]);
+
+        let hint_line = Line::from(Span::styled(
+            "Druecke Enter um die Vorschau anzuwenden",
+            Style::default().fg(INPUT_COLOR),
+        ));
+        frame.render_widget(Paragraph::new(hint_line), inner_chunks[2]);
+    }
 }
 
 /// Draw the preview panel
@@ -231,7 +257,8 @@ fn draw_preview_panel(frame: &mut Frame, app: &App, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.search_input.is_empty() {
+    // For search/replace mode, check if search is empty
+    if app.rename_mode.uses_search_replace() && app.search_input.is_empty() {
         let hint = Paragraph::new("Gib einen Suchbegriff ein, um die Vorschau zu sehen")
             .style(Style::default().fg(TEXT_DIM));
         frame.render_widget(hint, inner_area);
@@ -276,13 +303,15 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let help_text = match app.focused_panel {
         FocusedPanel::Files => vec![
-            ("j/k", "Navigation"),
-            ("Space", "Auswaehlen"),
+            ("j/k", "Nav"),
+            ("Space", "Ausw"),
             ("a", "Alle"),
-            ("Tab", "Naechstes Feld"),
-            ("Enter", "Ausfuehren"),
+            ("m", "Modus"),
+            ("s", "Sort"),
+            ("Tab", "Feld"),
+            ("Enter", "Run"),
             ("?", "Hilfe"),
-            ("q", "Beenden"),
+            ("q", "Ende"),
         ],
         FocusedPanel::SearchField | FocusedPanel::ReplaceField => vec![
             ("Tab", "Naechstes Feld"),
@@ -298,7 +327,6 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
             vec![
                 Span::styled(format!(" {} ", key), Style::default().fg(HELP_KEY_COLOR).bold()),
                 Span::styled(format!("{} ", desc), Style::default().fg(HELP_DESC_COLOR)),
-                Span::raw(" "),
             ]
         })
         .collect();
@@ -366,7 +394,7 @@ fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
 
 /// Draw the help dialog
 fn draw_help_dialog(frame: &mut Frame) {
-    let area = centered_rect(70, 80, frame.area());
+    let area = centered_rect(70, 85, frame.area());
 
     frame.render_widget(Clear, area);
 
@@ -386,6 +414,10 @@ fn draw_help_dialog(frame: &mut Frame) {
         ("k / Pfeil hoch", "Vorherige Datei"),
         ("Space", "Datei auswaehlen/abwaehlen"),
         ("a", "Alle Dateien auswaehlen/abwaehlen"),
+        ("", ""),
+        ("", "--- Modi & Sortierung ---"),
+        ("m", "Modus wechseln (Suchen/Gross/Klein/Titel)"),
+        ("s", "Sortierung wechseln"),
         ("", ""),
         ("", "--- Navigation ---"),
         ("Tab", "Naechstes Panel"),
@@ -506,4 +538,3 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         ])
         .split(popup_layout[1])[1]
 }
-

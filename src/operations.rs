@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 
-use crate::app::FileEntry;
+use crate::app::{FileEntry, RenameMode};
 
 /// Preview of a rename operation
 #[derive(Debug, Clone)]
@@ -18,12 +18,13 @@ pub struct RenamePreview {
     pub file_index: usize,
 }
 
-/// Generate previews for all selected files based on search/replace
+/// Generate previews for all selected files based on mode and search/replace
 pub fn generate_previews(
     files: &[FileEntry],
     selected: &HashSet<usize>,
     search: &str,
     replace: &str,
+    mode: RenameMode,
 ) -> Vec<RenamePreview> {
     let mut previews = Vec::new();
 
@@ -41,13 +42,8 @@ pub fn generate_previews(
                 continue;
             }
 
-            let new_name = if search.is_empty() {
-                file.name.clone()
-            } else {
-                file.name.replace(search, replace)
-            };
-
-            let will_change = new_name != file.name && !search.is_empty();
+            let new_name = apply_rename_mode(&file.name, search, replace, mode);
+            let will_change = new_name != file.name;
 
             previews.push(RenamePreview {
                 original_name: file.name.clone(),
@@ -62,6 +58,67 @@ pub fn generate_previews(
     previews.sort_by(|a, b| a.original_name.cmp(&b.original_name));
 
     previews
+}
+
+/// Apply the rename mode to a filename
+fn apply_rename_mode(filename: &str, search: &str, replace: &str, mode: RenameMode) -> String {
+    match mode {
+        RenameMode::SearchReplace => {
+            if search.is_empty() {
+                filename.to_string()
+            } else {
+                filename.replace(search, replace)
+            }
+        }
+        RenameMode::Uppercase => to_uppercase_preserve_extension(filename),
+        RenameMode::Lowercase => to_lowercase_preserve_extension(filename),
+        RenameMode::TitleCase => to_titlecase_preserve_extension(filename),
+    }
+}
+
+/// Convert filename to uppercase, preserving extension case optionally
+fn to_uppercase_preserve_extension(filename: &str) -> String {
+    if let Some(dot_pos) = filename.rfind('.') {
+        let (name, ext) = filename.split_at(dot_pos);
+        format!("{}{}", name.to_uppercase(), ext.to_lowercase())
+    } else {
+        filename.to_uppercase()
+    }
+}
+
+/// Convert filename to lowercase
+fn to_lowercase_preserve_extension(filename: &str) -> String {
+    filename.to_lowercase()
+}
+
+/// Convert filename to title case
+fn to_titlecase_preserve_extension(filename: &str) -> String {
+    if let Some(dot_pos) = filename.rfind('.') {
+        let (name, ext) = filename.split_at(dot_pos);
+        format!("{}{}", to_titlecase(name), ext.to_lowercase())
+    } else {
+        to_titlecase(filename)
+    }
+}
+
+/// Convert a string to title case
+fn to_titlecase(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = true;
+
+    for c in s.chars() {
+        if c.is_whitespace() || c == '_' || c == '-' {
+            result.push(c);
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(c.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.extend(c.to_lowercase());
+        }
+    }
+
+    result
 }
 
 /// Execute the actual rename operations
@@ -85,11 +142,14 @@ pub fn execute_renames(previews: &[RenamePreview], directory: &PathBuf) -> Resul
 
         // Check if target already exists (and is different from source)
         if new_path.exists() && old_path != new_path {
-            errors.push(format!(
-                "Zieldatei existiert bereits: {}",
-                preview.new_name
-            ));
-            continue;
+            // Case-insensitive check for case changes
+            if old_path.to_string_lossy().to_lowercase() != new_path.to_string_lossy().to_lowercase() {
+                errors.push(format!(
+                    "Zieldatei existiert bereits: {}",
+                    preview.new_name
+                ));
+                continue;
+            }
         }
 
         // Check for invalid characters in new name
@@ -133,6 +193,26 @@ pub fn execute_renames(previews: &[RenamePreview], directory: &PathBuf) -> Resul
     Ok(renamed_count)
 }
 
+/// Print previews to stdout (for non-interactive mode)
+pub fn print_previews(previews: &[RenamePreview]) {
+    let changes: Vec<_> = previews.iter().filter(|p| p.will_change).collect();
+    
+    if changes.is_empty() {
+        println!("Keine Aenderungen.");
+        return;
+    }
+
+    println!("\nVorschau der Aenderungen:");
+    println!("{:-<60}", "");
+    
+    for preview in &changes {
+        println!("  {} -> {}", preview.original_name, preview.new_name);
+    }
+    
+    println!("{:-<60}", "");
+    println!("{} Datei(en) werden umbenannt.\n", changes.len());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,11 +224,14 @@ mod tests {
                 path: PathBuf::from("test.txt"),
                 name: "test.txt".to_string(),
                 is_dir: false,
+                size: 0,
+                modified: None,
+                extension: "txt".to_string(),
             },
         ];
         let selected = HashSet::new();
 
-        let previews = generate_previews(&files, &selected, "", "replacement");
+        let previews = generate_previews(&files, &selected, "", "replacement", RenameMode::SearchReplace);
 
         assert_eq!(previews.len(), 1);
         assert!(!previews[0].will_change);
@@ -163,16 +246,22 @@ mod tests {
                 path: PathBuf::from("image001.jpg"),
                 name: "image001.jpg".to_string(),
                 is_dir: false,
+                size: 0,
+                modified: None,
+                extension: "jpg".to_string(),
             },
             FileEntry {
                 path: PathBuf::from("image002.jpg"),
                 name: "image002.jpg".to_string(),
                 is_dir: false,
+                size: 0,
+                modified: None,
+                extension: "jpg".to_string(),
             },
         ];
         let selected = HashSet::new();
 
-        let previews = generate_previews(&files, &selected, "image", "photo");
+        let previews = generate_previews(&files, &selected, "image", "photo", RenameMode::SearchReplace);
 
         assert_eq!(previews.len(), 2);
         assert!(previews[0].will_change);
@@ -180,5 +269,46 @@ mod tests {
         assert!(previews[1].will_change);
         assert_eq!(previews[1].new_name, "photo002.jpg");
     }
-}
 
+    #[test]
+    fn test_uppercase_mode() {
+        let files = vec![
+            FileEntry {
+                path: PathBuf::from("test.txt"),
+                name: "test.txt".to_string(),
+                is_dir: false,
+                size: 0,
+                modified: None,
+                extension: "txt".to_string(),
+            },
+        ];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(&files, &selected, "", "", RenameMode::Uppercase);
+
+        assert_eq!(previews.len(), 1);
+        assert!(previews[0].will_change);
+        assert_eq!(previews[0].new_name, "TEST.txt");
+    }
+
+    #[test]
+    fn test_titlecase_mode() {
+        let files = vec![
+            FileEntry {
+                path: PathBuf::from("hello_world.txt"),
+                name: "hello_world.txt".to_string(),
+                is_dir: false,
+                size: 0,
+                modified: None,
+                extension: "txt".to_string(),
+            },
+        ];
+        let selected = HashSet::new();
+
+        let previews = generate_previews(&files, &selected, "", "", RenameMode::TitleCase);
+
+        assert_eq!(previews.len(), 1);
+        assert!(previews[0].will_change);
+        assert_eq!(previews[0].new_name, "Hello_World.txt");
+    }
+}

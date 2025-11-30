@@ -49,6 +49,18 @@ fn handle_files_panel(app: &mut App, key: KeyEvent) -> AppResult {
             AppResult::Continue
         }
 
+        // Mode cycling
+        KeyCode::Char('m') => {
+            app.cycle_mode();
+            AppResult::Continue
+        }
+
+        // Sort cycling
+        KeyCode::Char('s') => {
+            app.cycle_sort();
+            AppResult::Continue
+        }
+
         // Panel navigation
         KeyCode::Tab => {
             app.next_panel();
@@ -172,4 +184,3 @@ fn handle_message_dialog(app: &mut App, key: KeyEvent) -> AppResult {
         _ => AppResult::Continue,
     }
 }
-
