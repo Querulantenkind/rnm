@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use anyhow::{anyhow, Result};
 use regex::Regex;
 
-use crate::app::{FileEntry, PrefixAction, RenameMode};
+use crate::app::{DatePosition, FileEntry, PrefixAction, RenameMode};
 
 /// Preview of a rename operation
 #[derive(Debug, Clone)]
@@ -29,6 +30,7 @@ pub fn generate_previews(
     prefix_action: PrefixAction,
     number_start: usize,
     number_step: usize,
+    date_position: DatePosition,
 ) -> Result<Vec<RenamePreview>> {
     let mut previews = Vec::new();
 
@@ -66,6 +68,8 @@ pub fn generate_previews(
                 prefix_action,
                 regex.as_ref(),
                 counter,
+                date_position,
+                file.modified,
             );
 
             let will_change = new_name != file.name;
@@ -99,6 +103,8 @@ fn apply_rename_mode(
     prefix_action: PrefixAction,
     regex: Option<&Regex>,
     counter: usize,
+    date_position: DatePosition,
+    modified: Option<SystemTime>,
 ) -> String {
     match mode {
         RenameMode::SearchReplace => {
@@ -118,6 +124,7 @@ fn apply_rename_mode(
         RenameMode::Numbering => apply_numbering(filename, search, counter),
         RenameMode::Prefix => apply_prefix(filename, search, prefix_action),
         RenameMode::Suffix => apply_suffix(filename, search, prefix_action),
+        RenameMode::DateInsert => apply_date_insert(filename, date_position, modified),
         RenameMode::Uppercase => to_uppercase_preserve_extension(filename),
         RenameMode::Lowercase => to_lowercase_preserve_extension(filename),
         RenameMode::TitleCase => to_titlecase_preserve_extension(filename),
@@ -218,6 +225,76 @@ fn apply_suffix(filename: &str, suffix: &str, action: PrefixAction) -> String {
                 filename.to_string()
             }
         }
+    }
+}
+
+/// Format SystemTime as YYYYMMDD string
+fn format_date(time: SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    
+    // Calculate date from SystemTime
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    
+    // Simple date calculation (not accounting for leap seconds, but good enough)
+    let days = secs / 86400;
+    
+    // Calculate year, month, day
+    let mut year = 1970;
+    let mut remaining_days = days as i64;
+    
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    
+    let is_leap = is_leap_year(year);
+    let days_in_months: [i64; 12] = [
+        31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30,
+        31, 31, 30, 31, 30, 31
+    ];
+    
+    let mut month = 1;
+    for days_in_month in days_in_months {
+        if remaining_days < days_in_month {
+            break;
+        }
+        remaining_days -= days_in_month;
+        month += 1;
+    }
+    
+    let day = remaining_days + 1;
+    
+    format!("{:04}{:02}{:02}", year, month, day)
+}
+
+/// Check if a year is a leap year
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+/// Apply date insertion to filename
+fn apply_date_insert(filename: &str, position: DatePosition, modified: Option<SystemTime>) -> String {
+    let date_str = match modified {
+        Some(time) => format_date(time),
+        None => "00000000".to_string(), // Fallback if no date available
+    };
+    
+    // Split filename and extension
+    let (name, ext) = if let Some(dot_pos) = filename.rfind('.') {
+        (&filename[..dot_pos], &filename[dot_pos..])
+    } else {
+        (filename, "")
+    };
+    
+    match position {
+        DatePosition::Prefix => format!("{}_{}{}", date_str, name, ext),
+        DatePosition::Suffix => format!("{}_{}{}", name, date_str, ext),
+        DatePosition::Replace => format!("{}{}", date_str, ext),
     }
 }
 
@@ -380,7 +457,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "", "replacement",
-            RenameMode::SearchReplace, PrefixAction::Add, 1, 1
+            RenameMode::SearchReplace, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews.len(), 1);
@@ -399,7 +476,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "image", "photo",
-            RenameMode::SearchReplace, PrefixAction::Add, 1, 1
+            RenameMode::SearchReplace, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews.len(), 2);
@@ -416,7 +493,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "", "",
-            RenameMode::Uppercase, PrefixAction::Add, 1, 1
+            RenameMode::Uppercase, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews.len(), 1);
@@ -431,7 +508,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "", "",
-            RenameMode::TitleCase, PrefixAction::Add, 1, 1
+            RenameMode::TitleCase, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews.len(), 1);
@@ -449,7 +526,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, r"IMG_(\d+)", "photo_$1",
-            RenameMode::Regex, PrefixAction::Add, 1, 1
+            RenameMode::Regex, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews.len(), 2);
@@ -466,7 +543,7 @@ mod tests {
 
         let result = generate_previews(
             &files, &selected, r"[invalid", "replace",
-            RenameMode::Regex, PrefixAction::Add, 1, 1
+            RenameMode::Regex, PrefixAction::Add, 1, 1, DatePosition::Prefix
         );
 
         assert!(result.is_err());
@@ -486,7 +563,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "photo_###", "",
-            RenameMode::Numbering, PrefixAction::Add, 1, 1
+            RenameMode::Numbering, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews.len(), 3);
@@ -512,7 +589,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "backup_", "",
-            RenameMode::Prefix, PrefixAction::Add, 1, 1
+            RenameMode::Prefix, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews[0].new_name, "backup_photo.jpg");
@@ -525,7 +602,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "backup_", "",
-            RenameMode::Prefix, PrefixAction::Remove, 1, 1
+            RenameMode::Prefix, PrefixAction::Remove, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews[0].new_name, "photo.jpg");
@@ -538,7 +615,7 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "_backup", "",
-            RenameMode::Suffix, PrefixAction::Add, 1, 1
+            RenameMode::Suffix, PrefixAction::Add, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews[0].new_name, "photo_backup.jpg");
@@ -551,9 +628,54 @@ mod tests {
 
         let previews = generate_previews(
             &files, &selected, "_old", "",
-            RenameMode::Suffix, PrefixAction::Remove, 1, 1
+            RenameMode::Suffix, PrefixAction::Remove, 1, 1, DatePosition::Prefix
         ).unwrap();
 
         assert_eq!(previews[0].new_name, "photo.jpg");
+    }
+
+    #[test]
+    fn test_date_insert_prefix() {
+        use std::time::{Duration, UNIX_EPOCH};
+        
+        // November 30, 2024 = days since epoch
+        let days = 20058; // Approximate days to Nov 30, 2024
+        let time = UNIX_EPOCH + Duration::from_secs(days * 86400);
+        
+        let result = apply_date_insert("photo.jpg", DatePosition::Prefix, Some(time));
+        assert!(result.starts_with("2024"));
+        assert!(result.ends_with("_photo.jpg"));
+    }
+
+    #[test]
+    fn test_date_insert_suffix() {
+        use std::time::{Duration, UNIX_EPOCH};
+        
+        let days = 20058;
+        let time = UNIX_EPOCH + Duration::from_secs(days * 86400);
+        
+        let result = apply_date_insert("photo.jpg", DatePosition::Suffix, Some(time));
+        assert!(result.starts_with("photo_"));
+        assert!(result.contains("2024"));
+        assert!(result.ends_with(".jpg"));
+    }
+
+    #[test]
+    fn test_date_insert_replace() {
+        use std::time::{Duration, UNIX_EPOCH};
+        
+        let days = 20058;
+        let time = UNIX_EPOCH + Duration::from_secs(days * 86400);
+        
+        let result = apply_date_insert("photo.jpg", DatePosition::Replace, Some(time));
+        assert!(result.starts_with("2024"));
+        assert!(result.ends_with(".jpg"));
+        assert!(!result.contains("photo"));
+    }
+
+    #[test]
+    fn test_date_insert_no_date() {
+        let result = apply_date_insert("photo.jpg", DatePosition::Prefix, None);
+        assert_eq!(result, "00000000_photo.jpg");
     }
 }

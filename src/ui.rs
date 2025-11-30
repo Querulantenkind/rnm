@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DialogState, FocusedPanel, RenameMode};
+use crate::app::{App, DatePosition, DialogState, FocusedPanel, RenameMode};
 
 // btop-inspired color scheme
 const BORDER_COLOR: Color = Color::Cyan;
@@ -28,6 +28,20 @@ const SUCCESS_COLOR: Color = Color::LightGreen;
 const ERROR_COLOR: Color = Color::LightRed;
 const WARNING_COLOR: Color = Color::Yellow;
 const MODE_COLOR: Color = Color::Magenta;
+const SIZE_COLOR: Color = Color::DarkGray;
+
+/// Format file size in human-readable format
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
 
 /// Main draw function
 pub fn draw_ui(frame: &mut Frame, app: &App) {
@@ -85,6 +99,9 @@ fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Calculate the maximum name width for alignment
+    let available_width = inner_area.width.saturating_sub(3 + 10) as usize; // marker(3) + size(10)
+    
     let items: Vec<ListItem> = app
         .files
         .iter()
@@ -107,10 +124,26 @@ fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             let suffix = if file.is_dir { "/" } else { "" };
+            let display_name = format!("{}{}", file.name, suffix);
+            
+            // Truncate name if too long
+            let truncated_name = if display_name.len() > available_width {
+                format!("{}...", &display_name[..available_width.saturating_sub(3)])
+            } else {
+                display_name.clone()
+            };
+            
+            // Format size (right-aligned)
+            let size_str = if file.is_dir {
+                "     <DIR>".to_string()
+            } else {
+                format!("{:>10}", format_file_size(file.size))
+            };
 
             let line = Line::from(vec![
                 Span::styled(marker, marker_style),
-                Span::styled(format!("{}{}", file.name, suffix), name_style),
+                Span::styled(format!("{:<width$}", truncated_name, width = available_width), name_style),
+                Span::styled(size_str, Style::default().fg(SIZE_COLOR)),
             ]);
 
             let mut item = ListItem::new(line);
@@ -258,6 +291,31 @@ fn draw_operation_panel(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("  (t: wechseln)", Style::default().fg(TEXT_DIM)),
             ]);
             frame.render_widget(Paragraph::new(action_line), inner_chunks[2]);
+        }
+        RenameMode::DateInsert => {
+            let example = match app.date_position {
+                DatePosition::Prefix => "photo.jpg -> 20241130_photo.jpg",
+                DatePosition::Suffix => "photo.jpg -> photo_20241130.jpg",
+                DatePosition::Replace => "photo.jpg -> 20241130.jpg",
+            };
+
+            let info_line = Line::from(vec![
+                Span::styled("Format:  ", Style::default().fg(TEXT_DIM)),
+                Span::styled("YYYYMMDD", Style::default().fg(INPUT_COLOR).bold()),
+                Span::styled("  (Aenderungsdatum)", Style::default().fg(TEXT_DIM)),
+            ]);
+            frame.render_widget(Paragraph::new(info_line), inner_chunks[1]);
+
+            let position_line = Line::from(vec![
+                Span::styled("Position:", Style::default().fg(TEXT_DIM)),
+                Span::styled(
+                    format!(" [{}]", app.date_position.display_name()),
+                    Style::default().fg(INPUT_COLOR).bold(),
+                ),
+                Span::styled("  (t: wechseln)  ", Style::default().fg(TEXT_DIM)),
+                Span::styled(example, Style::default().fg(TEXT_DIM).italic()),
+            ]);
+            frame.render_widget(Paragraph::new(position_line), inner_chunks[2]);
         }
         RenameMode::Uppercase | RenameMode::Lowercase | RenameMode::TitleCase => {
             let info_text = match app.rename_mode {
@@ -414,8 +472,8 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ("m", "Modus"),
                 ("s", "Sort"),
             ];
-            // Add 't' hint for prefix/suffix modes
-            if matches!(app.rename_mode, RenameMode::Prefix | RenameMode::Suffix) {
+            // Add 't' hint for modes with toggles
+            if app.rename_mode.has_toggle() {
                 base.push(("t", "Toggle"));
             }
             base.extend([
@@ -432,7 +490,7 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ("Enter", "Ausfuehren"),
                 ("Esc", "Zurueck"),
             ];
-            if matches!(app.rename_mode, RenameMode::Prefix | RenameMode::Suffix) {
+            if app.rename_mode.has_toggle() {
                 base.insert(1, ("t", "Toggle"));
             }
             base.push(("F1", "Hilfe"));
@@ -537,11 +595,11 @@ fn draw_help_dialog(frame: &mut Frame) {
         ("", "--- Modi & Sortierung ---"),
         ("m", "Modus wechseln"),
         ("s", "Sortierung wechseln"),
-        ("t", "Aktion wechseln (Prefix/Suffix)"),
+        ("t", "Aktion/Position wechseln"),
         ("", ""),
         ("", "--- Modi ---"),
         ("", "Suchen/Ersetzen, Regex, Nummerierung"),
-        ("", "Prefix, Suffix, GROSS, klein, Titel"),
+        ("", "Prefix, Suffix, Datum, GROSS, klein, Titel"),
         ("", ""),
         ("", "--- Navigation ---"),
         ("Tab", "Naechstes Panel"),

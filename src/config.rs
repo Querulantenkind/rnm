@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::app::{RenameMode, SortOrder};
+use crate::app::{DatePosition, RenameMode, SortOrder};
 
 /// A saved rename preset
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,9 +136,20 @@ pub fn parse_mode(mode_str: &str) -> Option<RenameMode> {
         "numbering" | "number" | "num" | "n" => Some(RenameMode::Numbering),
         "prefix" | "pre" => Some(RenameMode::Prefix),
         "suffix" | "suf" => Some(RenameMode::Suffix),
+        "date" | "dateinsert" | "date-insert" | "d" => Some(RenameMode::DateInsert),
         "upper" | "uppercase" | "u" => Some(RenameMode::Uppercase),
         "lower" | "lowercase" | "l" => Some(RenameMode::Lowercase),
         "title" | "titlecase" | "t" => Some(RenameMode::TitleCase),
+        _ => None,
+    }
+}
+
+/// Parse date position string from CLI argument
+pub fn parse_date_position(position_str: &str) -> Option<DatePosition> {
+    match position_str.to_lowercase().as_str() {
+        "prefix" | "pre" | "p" => Some(DatePosition::Prefix),
+        "suffix" | "suf" | "s" => Some(DatePosition::Suffix),
+        "replace" | "rep" | "r" => Some(DatePosition::Replace),
         _ => None,
     }
 }
@@ -182,7 +193,17 @@ mod tests {
         assert_eq!(parse_mode("lowercase"), Some(RenameMode::Lowercase));
         assert_eq!(parse_mode("title"), Some(RenameMode::TitleCase));
         assert_eq!(parse_mode("search"), Some(RenameMode::SearchReplace));
+        assert_eq!(parse_mode("date"), Some(RenameMode::DateInsert));
         assert_eq!(parse_mode("invalid"), None);
+    }
+
+    #[test]
+    fn test_parse_date_position() {
+        assert_eq!(parse_date_position("prefix"), Some(DatePosition::Prefix));
+        assert_eq!(parse_date_position("SUFFIX"), Some(DatePosition::Suffix));
+        assert_eq!(parse_date_position("replace"), Some(DatePosition::Replace));
+        assert_eq!(parse_date_position("p"), Some(DatePosition::Prefix));
+        assert_eq!(parse_date_position("invalid"), None);
     }
 
     #[test]

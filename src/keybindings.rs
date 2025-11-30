@@ -61,10 +61,12 @@ fn handle_files_panel(app: &mut App, key: KeyEvent) -> AppResult {
             AppResult::Continue
         }
 
-        // Toggle prefix/suffix action
+        // Toggle action (prefix/suffix action or date position)
         KeyCode::Char('t') => {
-            if matches!(app.rename_mode, RenameMode::Prefix | RenameMode::Suffix) {
-                app.toggle_prefix_action();
+            match app.rename_mode {
+                RenameMode::Prefix | RenameMode::Suffix => app.toggle_prefix_action(),
+                RenameMode::DateInsert => app.toggle_date_position(),
+                _ => {}
             }
             AppResult::Continue
         }

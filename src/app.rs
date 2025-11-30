@@ -57,6 +57,33 @@ impl PrefixAction {
     }
 }
 
+/// Position for date insertion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DatePosition {
+    #[default]
+    Prefix,
+    Suffix,
+    Replace,
+}
+
+impl DatePosition {
+    pub fn next(&self) -> Self {
+        match self {
+            DatePosition::Prefix => DatePosition::Suffix,
+            DatePosition::Suffix => DatePosition::Replace,
+            DatePosition::Replace => DatePosition::Prefix,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            DatePosition::Prefix => "Prefix",
+            DatePosition::Suffix => "Suffix",
+            DatePosition::Replace => "Ersetzen",
+        }
+    }
+}
+
 /// Rename operation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RenameMode {
@@ -66,6 +93,7 @@ pub enum RenameMode {
     Numbering,
     Prefix,
     Suffix,
+    DateInsert,
     Uppercase,
     Lowercase,
     TitleCase,
@@ -79,7 +107,8 @@ impl RenameMode {
             RenameMode::Regex => RenameMode::Numbering,
             RenameMode::Numbering => RenameMode::Prefix,
             RenameMode::Prefix => RenameMode::Suffix,
-            RenameMode::Suffix => RenameMode::Uppercase,
+            RenameMode::Suffix => RenameMode::DateInsert,
+            RenameMode::DateInsert => RenameMode::Uppercase,
             RenameMode::Uppercase => RenameMode::Lowercase,
             RenameMode::Lowercase => RenameMode::TitleCase,
             RenameMode::TitleCase => RenameMode::SearchReplace,
@@ -94,6 +123,7 @@ impl RenameMode {
             RenameMode::Numbering => "Nummerierung",
             RenameMode::Prefix => "Prefix",
             RenameMode::Suffix => "Suffix",
+            RenameMode::DateInsert => "Datum einfuegen",
             RenameMode::Uppercase => "GROSSBUCHSTABEN",
             RenameMode::Lowercase => "kleinbuchstaben",
             RenameMode::TitleCase => "Titel Schreibweise",
@@ -114,6 +144,14 @@ impl RenameMode {
                 | RenameMode::Numbering
                 | RenameMode::Prefix
                 | RenameMode::Suffix
+        )
+    }
+
+    /// Check if this mode has a toggleable action
+    pub fn has_toggle(&self) -> bool {
+        matches!(
+            self,
+            RenameMode::Prefix | RenameMode::Suffix | RenameMode::DateInsert
         )
     }
 }
@@ -236,6 +274,9 @@ pub struct App {
     /// Action for prefix/suffix mode
     pub prefix_action: PrefixAction,
 
+    /// Position for date insertion mode
+    pub date_position: DatePosition,
+
     /// Starting number for numbering mode
     pub number_start: usize,
 
@@ -268,6 +309,7 @@ impl App {
             rename_mode: RenameMode::default(),
             sort_order: SortOrder::default(),
             prefix_action: PrefixAction::default(),
+            date_position: DatePosition::default(),
             number_start: 1,
             number_step: 1,
             regex_error: None,
@@ -373,6 +415,12 @@ impl App {
         self.update_preview();
     }
 
+    /// Toggle date position (prefix/suffix/replace)
+    pub fn toggle_date_position(&mut self) {
+        self.date_position = self.date_position.next();
+        self.update_preview();
+    }
+
     /// Cycle to next sort order
     pub fn cycle_sort(&mut self) {
         self.sort_order = self.sort_order.next();
@@ -469,6 +517,7 @@ impl App {
             self.prefix_action,
             self.number_start,
             self.number_step,
+            self.date_position,
         );
 
         match result {

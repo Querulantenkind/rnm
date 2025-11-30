@@ -17,8 +17,8 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{App, AppResult, PrefixAction, RenameMode};
-use config::{parse_mode, Config, Preset};
+use app::{App, AppResult, DatePosition, PrefixAction, RenameMode};
+use config::{parse_date_position, parse_mode, Config, Preset};
 use keybindings::handle_key_event;
 use operations::{execute_renames, generate_previews, print_previews};
 use ui::draw_ui;
@@ -72,6 +72,14 @@ struct Args {
     #[arg(long)]
     remove_suffix: Option<String>,
 
+    /// Use date insertion mode (inserts file modification date)
+    #[arg(long)]
+    date: bool,
+
+    /// Position for date insertion: prefix, suffix, or replace
+    #[arg(long, default_value = "prefix")]
+    date_position: String,
+
     /// Load a saved preset by name
     #[arg(long, short = 'p')]
     preset: Option<String>,
@@ -114,6 +122,7 @@ fn main() -> Result<()> {
         || args.suffix.is_some()
         || args.remove_prefix.is_some()
         || args.remove_suffix.is_some()
+        || args.date
         || args.dry_run;
 
     if non_interactive {
@@ -177,8 +186,8 @@ fn save_preset(args: &Args, preset_name: &str) -> Result<()> {
 fn run_non_interactive(args: &Args, directory: PathBuf, pattern: Option<String>) -> Result<()> {
     let config = Config::load()?;
 
-    // Determine mode, search, replace, and prefix_action from args
-    let (mode, search, replace, prefix_action, number_start) = determine_mode_from_args(args, &config)?;
+    // Determine mode, search, replace, prefix_action, and date_position from args
+    let (mode, search, replace, prefix_action, number_start, date_position) = determine_mode_from_args(args, &config)?;
 
     // Validate inputs based on mode
     validate_mode_inputs(mode, &search)?;
@@ -193,12 +202,12 @@ fn run_non_interactive(args: &Args, directory: PathBuf, pattern: Option<String>)
 
     println!("Verzeichnis: {}", directory.display());
     println!("Modus: {}", mode.display_name());
-    print_mode_details(mode, &search, &replace, prefix_action);
+    print_mode_details(mode, &search, &replace, prefix_action, date_position);
     println!("Dateien: {}", files.len());
 
     // Generate previews
     let selected: HashSet<usize> = HashSet::new();
-    let previews = generate_previews(&files, &selected, &search, &replace, mode, prefix_action, number_start, 1)?;
+    let previews = generate_previews(&files, &selected, &search, &replace, mode, prefix_action, number_start, 1, date_position)?;
 
     // Print preview
     print_previews(&previews);
@@ -237,29 +246,36 @@ fn run_non_interactive(args: &Args, directory: PathBuf, pattern: Option<String>)
 }
 
 /// Determine mode and settings from CLI arguments
-fn determine_mode_from_args(args: &Args, config: &Config) -> Result<(RenameMode, String, String, PrefixAction, usize)> {
+fn determine_mode_from_args(args: &Args, config: &Config) -> Result<(RenameMode, String, String, PrefixAction, usize, DatePosition)> {
+    // Parse date position
+    let date_position = parse_date_position(&args.date_position)
+        .ok_or_else(|| anyhow!("Unbekannte Datums-Position: {} (erlaubt: prefix, suffix, replace)", args.date_position))?;
+
     // Check for preset first
     if let Some(preset_name) = &args.preset {
         let preset = config.get_preset(preset_name)
             .ok_or_else(|| anyhow!("Preset nicht gefunden: {}", preset_name))?;
-        return Ok((preset.mode, preset.search.clone(), preset.replace.clone(), PrefixAction::Add, 1));
+        return Ok((preset.mode, preset.search.clone(), preset.replace.clone(), PrefixAction::Add, 1, date_position));
     }
 
     // Check for shortcut arguments
+    if args.date {
+        return Ok((RenameMode::DateInsert, String::new(), String::new(), PrefixAction::Add, 1, date_position));
+    }
     if let Some(prefix) = &args.prefix {
-        return Ok((RenameMode::Prefix, prefix.clone(), String::new(), PrefixAction::Add, 1));
+        return Ok((RenameMode::Prefix, prefix.clone(), String::new(), PrefixAction::Add, 1, date_position));
     }
     if let Some(suffix) = &args.suffix {
-        return Ok((RenameMode::Suffix, suffix.clone(), String::new(), PrefixAction::Add, 1));
+        return Ok((RenameMode::Suffix, suffix.clone(), String::new(), PrefixAction::Add, 1, date_position));
     }
     if let Some(prefix) = &args.remove_prefix {
-        return Ok((RenameMode::Prefix, prefix.clone(), String::new(), PrefixAction::Remove, 1));
+        return Ok((RenameMode::Prefix, prefix.clone(), String::new(), PrefixAction::Remove, 1, date_position));
     }
     if let Some(suffix) = &args.remove_suffix {
-        return Ok((RenameMode::Suffix, suffix.clone(), String::new(), PrefixAction::Remove, 1));
+        return Ok((RenameMode::Suffix, suffix.clone(), String::new(), PrefixAction::Remove, 1, date_position));
     }
     if let Some(pattern) = &args.pattern {
-        return Ok((RenameMode::Numbering, pattern.clone(), String::new(), PrefixAction::Add, args.start));
+        return Ok((RenameMode::Numbering, pattern.clone(), String::new(), PrefixAction::Add, args.start, date_position));
     }
 
     // Use explicit mode
@@ -275,6 +291,7 @@ fn determine_mode_from_args(args: &Args, config: &Config) -> Result<(RenameMode,
         args.replace.clone().unwrap_or_default(),
         PrefixAction::Add,
         args.start,
+        date_position,
     ))
 }
 
@@ -296,13 +313,16 @@ fn validate_mode_inputs(mode: RenameMode, search: &str) -> Result<()> {
                 return Err(anyhow!("Fuer Prefix/Suffix muss ein Wert angegeben werden"));
             }
         }
+        RenameMode::DateInsert => {
+            // No additional validation needed for date mode
+        }
         _ => {}
     }
     Ok(())
 }
 
 /// Print mode-specific details
-fn print_mode_details(mode: RenameMode, search: &str, replace: &str, prefix_action: PrefixAction) {
+fn print_mode_details(mode: RenameMode, search: &str, replace: &str, prefix_action: PrefixAction, date_position: DatePosition) {
     match mode {
         RenameMode::SearchReplace => {
             println!("Suche: '{}' -> Ersetze: '{}'", search, replace);
@@ -316,6 +336,9 @@ fn print_mode_details(mode: RenameMode, search: &str, replace: &str, prefix_acti
         RenameMode::Prefix | RenameMode::Suffix => {
             let action = if prefix_action == PrefixAction::Add { "Hinzufuegen" } else { "Entfernen" };
             println!("{}: '{}' ({})", mode.display_name(), search, action);
+        }
+        RenameMode::DateInsert => {
+            println!("Position: {} (Format: YYYYMMDD)", date_position.display_name());
         }
         _ => {}
     }
