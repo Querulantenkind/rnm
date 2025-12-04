@@ -358,20 +358,10 @@ fn to_titlecase(s: &str) -> String {
     result
 }
 
-/// Execute the actual rename operations and record history
+/// Execute the actual rename operations
 pub fn execute_renames(previews: &[RenamePreview], directory: &PathBuf) -> Result<usize> {
-    execute_renames_with_history(previews, directory, Some("Umbenennung"))
-}
-
-/// Execute the actual rename operations with optional history recording
-pub fn execute_renames_with_history(
-    previews: &[RenamePreview],
-    directory: &PathBuf,
-    description: Option<&str>,
-) -> Result<usize> {
     let mut renamed_count = 0;
     let mut errors = Vec::new();
-    let mut history_entries = Vec::new();
 
     // First, validate all operations
     for preview in previews.iter().filter(|p| p.will_change) {
@@ -421,14 +411,7 @@ pub fn execute_renames_with_history(
         let new_path = directory.join(&preview.new_name);
 
         match std::fs::rename(&old_path, &new_path) {
-            Ok(_) => {
-                renamed_count += 1;
-                // Record for history
-                history_entries.push(RenameHistoryEntry {
-                    original_name: preview.original_name.clone(),
-                    new_name: preview.new_name.clone(),
-                });
-            }
+            Ok(_) => renamed_count += 1,
             Err(e) => {
                 return Err(anyhow!(
                     "Fehler beim Umbenennen von '{}' zu '{}': {}",
@@ -440,114 +423,7 @@ pub fn execute_renames_with_history(
         }
     }
 
-    // Save to history if we renamed any files
-    if !history_entries.is_empty() && description.is_some() {
-        if let Ok(mut history) = RenameHistory::load() {
-            let operation = RenameOperation::new(
-                directory.clone(),
-                history_entries,
-                description.unwrap_or("Umbenennung").to_string(),
-            );
-            history.add_operation(operation);
-            let _ = history.save(); // Ignore save errors to not break the main operation
-        }
-    }
-
     Ok(renamed_count)
-}
-
-/// Undo the last rename operation
-pub fn undo_last_rename() -> Result<(usize, PathBuf)> {
-    let mut history = RenameHistory::load()?;
-
-    let operation = history
-        .pop_operation()
-        .ok_or_else(|| anyhow!("Keine Umbenennung zum Rueckgaengig machen vorhanden"))?;
-
-    let directory = operation.directory.clone();
-    let mut undone_count = 0;
-    let mut errors = Vec::new();
-
-    // Validate all undo operations first
-    for entry in &operation.entries {
-        let current_path = directory.join(&entry.new_name);
-        let original_path = directory.join(&entry.original_name);
-
-        // Check if current (renamed) file exists
-        if !current_path.exists() {
-            errors.push(format!(
-                "Datei existiert nicht mehr: {} (uebersprungen)",
-                entry.new_name
-            ));
-            continue;
-        }
-
-        // Check if original name is already taken by another file
-        if original_path.exists() && current_path != original_path {
-            if current_path.to_string_lossy().to_lowercase()
-                != original_path.to_string_lossy().to_lowercase()
-            {
-                errors.push(format!(
-                    "Urspruenglicher Name bereits vergeben: {} (uebersprungen)",
-                    entry.original_name
-                ));
-                continue;
-            }
-        }
-    }
-
-    // Execute undo renames (reverse: new_name -> original_name)
-    for entry in &operation.entries {
-        let current_path = directory.join(&entry.new_name);
-        let original_path = directory.join(&entry.original_name);
-
-        if !current_path.exists() {
-            continue; // Skip files that no longer exist
-        }
-
-        if original_path.exists() && current_path != original_path {
-            if current_path.to_string_lossy().to_lowercase()
-                != original_path.to_string_lossy().to_lowercase()
-            {
-                continue; // Skip if original name is taken
-            }
-        }
-
-        match std::fs::rename(&current_path, &original_path) {
-            Ok(_) => undone_count += 1,
-            Err(e) => {
-                errors.push(format!(
-                    "Fehler beim Rueckgaengig machen von '{}': {}",
-                    entry.new_name, e
-                ));
-            }
-        }
-    }
-
-    // Save updated history (with operation removed)
-    history.save()?;
-
-    if undone_count == 0 && !errors.is_empty() {
-        return Err(anyhow!("Undo fehlgeschlagen:\n{}", errors.join("\n")));
-    }
-
-    Ok((undone_count, directory))
-}
-
-/// Get a preview of what undo would do
-pub fn get_undo_preview() -> Result<Option<(String, Vec<(String, String)>)>> {
-    let history = RenameHistory::load()?;
-
-    if let Some(operation) = history.last_operation() {
-        let entries: Vec<(String, String)> = operation
-            .entries
-            .iter()
-            .map(|e| (e.new_name.clone(), e.original_name.clone()))
-            .collect();
-        Ok(Some((operation.description.clone(), entries)))
-    } else {
-        Ok(None)
-    }
 }
 
 /// Print previews to stdout (for non-interactive mode)

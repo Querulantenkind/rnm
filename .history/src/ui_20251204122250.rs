@@ -534,7 +534,6 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
             base.extend([
                 ("Tab", "Feld"),
                 ("Enter", "Run"),
-                ("u", "Undo"),
                 ("?", "Hilfe"),
                 ("q", "Ende"),
             ]);

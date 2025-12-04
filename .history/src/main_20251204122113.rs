@@ -113,16 +113,6 @@ fn main() -> Result<()> {
         return list_presets();
     }
 
-    // Handle history command
-    if args.history {
-        return show_history();
-    }
-
-    // Handle undo command
-    if args.undo {
-        return run_undo(&args);
-    }
-
     // Handle save-preset command
     if let Some(preset_name) = &args.save_preset {
         return save_preset(&args, preset_name);
@@ -171,93 +161,6 @@ fn list_presets() -> Result<()> {
             println!("    Ersetze: '{}'", preset.replace);
         }
         println!();
-    }
-
-    Ok(())
-}
-
-/// Show rename history
-fn show_history() -> Result<()> {
-    use config::RenameHistory;
-    use std::time::{Duration, UNIX_EPOCH};
-
-    let history = RenameHistory::load()?;
-
-    if history.is_empty() {
-        println!("Keine Umbenennungs-Historie vorhanden.");
-        return Ok(());
-    }
-
-    println!("Umbenennungs-Historie ({} Operationen):\n", history.len());
-
-    for (i, operation) in history.operations.iter().rev().enumerate() {
-        let datetime = UNIX_EPOCH + Duration::from_secs(operation.timestamp);
-        let time_str = format!("{:?}", datetime);
-        
-        println!(
-            "  {}. {} ({} Dateien)",
-            i + 1,
-            operation.description,
-            operation.entries.len()
-        );
-        println!("     Verzeichnis: {}", operation.directory.display());
-        println!("     Zeitpunkt: {}", time_str);
-        
-        // Show first few entries as preview
-        let preview_count = operation.entries.len().min(3);
-        for entry in operation.entries.iter().take(preview_count) {
-            println!("       {} -> {}", entry.original_name, entry.new_name);
-        }
-        if operation.entries.len() > preview_count {
-            println!("       ... und {} weitere", operation.entries.len() - preview_count);
-        }
-        println!();
-    }
-
-    println!("Tipp: Benutze 'rnm --undo' um die letzte Operation rueckgaengig zu machen.");
-    Ok(())
-}
-
-/// Undo the last rename operation
-fn run_undo(args: &Args) -> Result<()> {
-    // Show what will be undone
-    if let Some((description, entries)) = get_undo_preview()? {
-        println!("Letzte Operation: {} ({} Dateien)", description, entries.len());
-        println!("\nVorschau (rueckgaengig machen):");
-        println!("{:-<60}", "");
-        
-        let preview_count = entries.len().min(10);
-        for (current, original) in entries.iter().take(preview_count) {
-            println!("  {} -> {}", current, original);
-        }
-        if entries.len() > preview_count {
-            println!("  ... und {} weitere", entries.len() - preview_count);
-        }
-        println!("{:-<60}", "");
-
-        // Confirm unless --yes is provided
-        if !args.yes {
-            print!("Rueckgaengig machen? [y/N] ");
-            io::stdout().flush()?;
-            
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Abgebrochen.");
-                return Ok(());
-            }
-        }
-
-        // Execute undo
-        let (count, directory) = undo_last_rename()?;
-        println!(
-            "{} Datei(en) in {} rueckgaengig gemacht.",
-            count,
-            directory.display()
-        );
-    } else {
-        println!("Keine Umbenennung zum Rueckgaengig machen vorhanden.");
     }
 
     Ok(())

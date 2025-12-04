@@ -95,8 +95,8 @@ impl RenameHistory {
             })?;
         }
 
-        let content =
-            serde_json::to_string_pretty(self).context("Konnte Historie nicht serialisieren")?;
+        let content = serde_json::to_string_pretty(self)
+            .context("Konnte Historie nicht serialisieren")?;
 
         fs::write(&path, content)
             .with_context(|| format!("Konnte Historie nicht schreiben: {}", path.display()))?;
